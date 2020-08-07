@@ -19,12 +19,12 @@ if (choice == 1):
 
 	os.system("git add .")
 	os.system("git commit -m " + '"Commit by ' + name + ' on ' + d2 + ' ' + time_string +  '"')
-	os.system("git push origin master")
+	os.system("git push origin prototype_v1")
 
 elif (choice == 2):
 	message = input("Enter a commit message\n>")
 	os.system("git add .")
 	os.system("git commit -m " + '"' +  message + '"')
-	os.system("git push origin master")	
+	os.system("git push origin prototype_v1")	
 else:
 	print("You failed!")
