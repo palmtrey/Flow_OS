@@ -2,21 +2,19 @@
 // Title: Flow OS v1                                                                         //
 // Purpose: To create an operating system for Palmer Technologies' Flow Extruder Prototype.  //
 // Developer: Cameron Palmer                                                                 //
-// Last Modified: August 7, 2020                                                             //
+// Last Modified: August 9, 2020                                                             //
 ///////////////////////////////////////////////////////////////////////////////////////////////
 
 #define PROTOTYPE_VERSION "1.0"
 
 // Included Libraries
-#include <AccelStepper.h>
-#include <LiquidCrystal.h>
-#include <LiquidMenu.h>
-#include <Encoder.h>
+#include <AccelStepper.h> // For motors
+#include <LiquidCrystal.h> // For LCD
+#include <LiquidMenu.h> // For menus on the LCD
+#include <Encoder.h> // For rotary encoder
+#include <PID_v1.h> // For PID temperature control
 
-
-#include <AverageThermocouple.h>      // Thermocouple libraries
-#include <SmoothThermocouple.h>       //
-#include <Thermocouple.h>             //
+#include <Thermocouple.h>             // Thermocouple libraries
 #include <MAX6675_Thermocouple.h>     //
 
 //==================================
@@ -61,7 +59,7 @@ AccelStepper m_level(1, M_LEVEL_STEP, M_LEVEL_DIR);
 AccelStepper m_winder(1, M_WINDER_STEP, M_WINDER_DIR);
 
 // Thermocouple Object
-MAX6675_Thermocouple thermocouple(THERMO_SCK, THERMO_CS, THERMO_SO);
+Thermocouple* thermocouple = new MAX6675_Thermocouple(THERMO_SCK, THERMO_CS, THERMO_SO);
 
 // LCD Object
 LiquidCrystal lcd(RS, ENABLE, DB4, DB5, DB6, DB7);
@@ -69,40 +67,49 @@ LiquidCrystal lcd(RS, ENABLE, DB4, DB5, DB6, DB7);
 // Encoder Object & Variables
 Encoder enc(ENC_CLOCK, ENC_DATA);
 long encOldPosition = -999;
+long newPosition = 0;
 unsigned long currentTime = 0;
 //==================================
 
 // Status display variables
-short temperature = -99;
 short extruderMotorStatus = 0;
 short rollerMotorStatus = 0;
 short levelMotorStatus = 0;
 short winderMotorStatus = 0;
 
-// Used for attaching to LiquidLines to make them focusable
+// PID variables, PID object
+double temperature = -99;
+double newTemp = 0;
+double setTemp = 50;
+double output;
+double Kp = 2, Ki = 5, Kd = 1;
+unsigned long pidTimekeeper = 0;
+PID pid(&temperature, &output, &setTemp, Kp, Ki, Kd, DIRECT); 
+
+// Used for attaching to LiquidLines to make them focusable, and thus scrollable
 void blankFunction() {
   return;
   
  }
- 
+
 // Menu creation
 LiquidMenu menu(lcd);
 
 LiquidLine welcomeLine0(0,0, "Flow Extruder");
-LiquidLine welcomeLine1(0,1, "Prototype v", PROTOTYPE_VERSION); // Welcome screen
-LiquidScreen welcomeScreen(welcomeLine0, welcomeLine1);
+LiquidLine welcomeLine1(0,1, "Prototype v", PROTOTYPE_VERSION); 
+LiquidScreen welcomeScreen(welcomeLine0, welcomeLine1); // Welcome screen
 
-LiquidLine statusLine0(0,0, "Temp ", temperature, "C");
+LiquidLine statusLine0(0,0, temperature, "C");
 LiquidLine statusLine1(0,1,"Click for more");
-LiquidScreen statusScreen(statusLine0, statusLine1);
+LiquidScreen statusScreen(statusLine0, statusLine1); // Status screen. Shows temp of heater.
 
-LiquidLine optionsLine0(0,0, "Back");
-LiquidLine optionsLine1(0,1, "Set temp");
-LiquidLine optionsLine2(0,2, "Set ext spd");
-LiquidLine optionsLine3(0,3, "Set rol spd");
-LiquidLine optionsLine4(0,4, "Set lvl spd");
-LiquidLine optionsLine5(0,5, "Set wind spd");
-LiquidScreen optionsScreen(optionsLine0, optionsLine1, optionsLine2, optionsLine3); // LiquidScreen class constructor will only take 4 LiquidLines. The 5th and 6th are added below when the lcd is setup.
+LiquidLine optionsLine0(0,0, " Back"); // On screens with selectable elements, like the options screen, leave a space at the front of the string for the focus symbol
+LiquidLine optionsLine1(0,1, " Set temp (", setTemp, "C)");
+LiquidLine optionsLine2(0,1, " Set ext spd");
+LiquidLine optionsLine3(0,1, " Set rol spd");
+LiquidLine optionsLine4(0,1, " Set lvl spd");
+LiquidLine optionsLine5(0,1, " Set wind spd"); // Options screen to change set temp, motor speeds, eventually (in prototype v2?) filament diameter
+LiquidScreen optionsScreen;
 
 
 void setup() {
@@ -114,9 +121,17 @@ void setup() {
   pinMode(FAN, OUTPUT);
   pinMode(HEATER, OUTPUT);
 
-  // More menu setup
-  
 
+  // Set up lcd
+  lcd.begin(16,2);
+  optionsScreen.add_line(optionsLine0);
+  optionsScreen.add_line(optionsLine1);
+  optionsScreen.add_line(optionsLine2);
+  optionsScreen.add_line(optionsLine3);
+  optionsScreen.add_line(optionsLine4); // Adding the 5th and 6th lines to the options screen
+  optionsScreen.add_line(optionsLine5);
+
+  // Attach functions to options lines
   optionsLine0.attach_function(1, blankFunction);
   optionsLine1.attach_function(1, blankFunction);
   optionsLine2.attach_function(1, blankFunction);
@@ -124,78 +139,86 @@ void setup() {
   optionsLine4.attach_function(1, blankFunction);
   optionsLine5.attach_function(1, blankFunction);
 
-  optionsScreen.set_displayLineCount(2);
-
-  
-  // Set up lcd, show welcome screen
-  lcd.begin(16,2);
-  optionsScreen.add_line(optionsLine4); // Adding the 5th and 6th lines to the options screen
-  optionsScreen.add_line(optionsLine5);
-  menu.add_screen(welcomeScreen);
+  // More menu setup: show welcome screen, then delay 3s, show status screen
+  optionsScreen.set_displayLineCount(2); // Set the number of lines the display has; this is necessary to allow scrolling
+  menu.add_screen(welcomeScreen); // Add the screens to the menu
   menu.add_screen(statusScreen);
   menu.add_screen(optionsScreen);
+  menu.set_focusPosition(Position::LEFT);
   menu.update();
   delay(3000);
   menu.next_screen();
   
 
- 
+ //analogWrite(HEATER, 100);
+
+  // Start PID (TESTING PURPOSES)
+  pid.SetMode(AUTOMATIC);
  
 }
 
 void loop() {
-  
-  // Startup tests
-  
-    // Motor tests
-    //m_extruder.runSpeed();
-    //m_winder.runSpeed();
-    //m_level.moveTo(100);
-    //m_level.run();
-  
-  
-    // Thermocouple tests
-    //Serial.begin(9600);
-    //Serial.println(thermocouple.readCelsius());
-    //delay(1000);
-    
-    // Fan test
-    
-  
-    // Heating tests
-    //digitalWrite(4, HIGH);
-    //delay(4000);
-    //digitalWrite(4, LOW);
 
-    
-  // Reading encoder
-  long newPosition = enc.read();
-  if (newPosition != encOldPosition) {
-    encOldPosition = newPosition; 
+  if (millis() >= currentTime + 1000){
+    Serial.println(thermocouple->readCelsius());
+    currentTime = millis();
+    }
+  // Motor tests
+  //m_extruder.runSpeed();
+  //m_winder.runSpeed();
+  //m_level.moveTo(100);
+  //m_level.run();
+
+  
+
+  // Reading encoder turns
+  newPosition = enc.read()/4;
+  if ((newPosition != encOldPosition) && (menu.get_currentScreen() != &statusScreen)) {
+    if(menu.get_currentScreen() == &optionsScreen && newPosition > encOldPosition){
+     menu.switch_focus(false); // Focus backwards (up the screen) when encoder is turned counter-clockwise
+    }
+    if(menu.get_currentScreen() == &optionsScreen && newPosition < encOldPosition){
+      menu.switch_focus(true); // Focus forwards (down the screen) when encoder is turned clockwise
+    }
+    encOldPosition = newPosition;
     menu.update();
-    //Serial.println(newPosition);
   }
 
-  // Reading thermocouple, storing value in short temperature if value needs to be updated, and updating menu to show updated temp
-  if(temperature != short(thermocouple.readCelsius())){
-      temperature = thermocouple.readCelsius();
-      menu.update();
-    }
 
-
-  // Switching a screen when the encoder is clicked
+  // Reading encoder button
   if(digitalRead(ENC_SWITCH) == LOW && (currentTime + 1000 <= millis())){
-
+    
+   // If current screen is the status screen, go to the options screen
    if(menu.get_currentScreen() == &statusScreen){
       menu.change_screen(&optionsScreen);
+      menu.update();
+      //delay(500);
+    } 
+    // If current screen is the options screen, and the selected line is "Back"
+    else if(menu.get_currentScreen() == &optionsScreen && menu.get_focusedLine() == 0){
+      menu.change_screen(&statusScreen);
+      menu.update();
     }
-   
-    currentTime = millis();
-    
    }
+
+  // Reading thermocouple, storing value in short temperature if value needs to be updated, and updating menu if needed
+  if (millis() >= pidTimekeeper + 500){
+    newTemp = thermocouple->readCelsius();
+    if(temperature != newTemp){
+       temperature = newTemp;
+        if (menu.get_currentScreen() == &statusScreen){
+          menu.update();
+      }
+    }
+    pidTimekeeper = millis();
+  }
   
+
+   // Adjusting PID
+   pid.Compute();
+   analogWrite(HEATER, output);
+
   
-  
-  
+   
   
 }
