@@ -1,8 +1,8 @@
 ///////////////////////////////////////////////////////////////////////////////////////////////
 // Title: Flow OS v1                                                                         //
 // Purpose: To create an operating system for Palmer Technologies' Flow Extruder Prototype.  //
-// Developer: Cameron Palmer                                                                 //
-// Last Modified: August 9, 2020                                                             //
+// Developer: Cameron Palmer, palmertech3d@gmail.com                                         //
+// Last Modified: September 2, 2020                                                          //
 ///////////////////////////////////////////////////////////////////////////////////////////////
 
 #define PROTOTYPE_VERSION "1.0"
@@ -12,11 +12,13 @@
 #include <LiquidCrystal.h> // For LCD
 #include <LiquidMenu.h> // For menus on the LCD
 #include <Encoder.h> // For rotary encoder
-#include <PID_v1.h> // For PID temperature control
+#include <PID_v1.h> // For PID control
+#include <PID_AutoTune_v0.h>
 
 #include <Thermocouple.h>             // Thermocouple libraries
 #include <MAX6675_Thermocouple.h>     //
 
+#include <math.h>
 //==================================
 
 // Pinout Constants
@@ -51,6 +53,11 @@
 
 //==================================
 
+// Functions
+
+void returnPIDConstants();
+
+//==================================
 //Objects
 // Stepper objects
 AccelStepper m_extruder(1, M_EXTRUDER_STEP, M_EXTRUDER_DIR);
@@ -80,11 +87,16 @@ short winderMotorStatus = 0;
 // PID variables, PID object
 double temperature = -99;
 double newTemp = 0;
-double setTemp = 50;
+double setTemp = 0;
 double output;
-double Kp = 2, Ki = 5, Kd = 1;
+double Kp = 2.16, Ki =0.08 , Kd = 15.28;
 unsigned long pidTimekeeper = 0;
-PID pid(&temperature, &output, &setTemp, Kp, Ki, Kd, DIRECT); 
+PID pid(&temperature, &output, &setTemp, Kp, Ki, Kd, DIRECT);
+
+// PID Autotuning
+PID_ATune pidAuto(&temperature, &output);
+bool stopPidAuto = false; // Set to true when the autotuner finishes
+
 
 // Used for attaching to LiquidLines to make them focusable, and thus scrollable
 void blankFunction() {
@@ -95,21 +107,29 @@ void blankFunction() {
 // Menu creation
 LiquidMenu menu(lcd);
 
+// Create lines for the welcome screen and add them to it
 LiquidLine welcomeLine0(0,0, "Flow Extruder");
 LiquidLine welcomeLine1(0,1, "Prototype v", PROTOTYPE_VERSION); 
 LiquidScreen welcomeScreen(welcomeLine0, welcomeLine1); // Welcome screen
 
+// Create lines for the status screen and add them to it 
 LiquidLine statusLine0(0,0, temperature, "C");
 LiquidLine statusLine1(0,1,"Click for more");
 LiquidScreen statusScreen(statusLine0, statusLine1); // Status screen. Shows temp of heater.
 
+// Create lines for the options screen, initialize the options screen, but wait to add the lines to it until void setup()
+// This is because the LiquidScreen constructor can only take so many (4 maybe?) lines in its constructor
 LiquidLine optionsLine0(0,0, " Back"); // On screens with selectable elements, like the options screen, leave a space at the front of the string for the focus symbol
-LiquidLine optionsLine1(0,1, " Set temp (", setTemp, "C)");
+LiquidLine optionsLine1(0,1, " Set temp ", setTemp, "C");
 LiquidLine optionsLine2(0,1, " Set ext spd");
 LiquidLine optionsLine3(0,1, " Set rol spd");
 LiquidLine optionsLine4(0,1, " Set lvl spd");
 LiquidLine optionsLine5(0,1, " Set wind spd"); // Options screen to change set temp, motor speeds, eventually (in prototype v2?) filament diameter
 LiquidScreen optionsScreen;
+
+LiquidLine tempLine0(0,0, "T: ", temperature, "C");
+LiquidLine tempLine1(0,1, "Set: <", setTemp, ">");
+LiquidScreen tempScreen(tempLine0, tempLine1);
 
 
 void setup() {
@@ -144,6 +164,7 @@ void setup() {
   menu.add_screen(welcomeScreen); // Add the screens to the menu
   menu.add_screen(statusScreen);
   menu.add_screen(optionsScreen);
+  menu.add_screen(tempScreen);
   menu.set_focusPosition(Position::LEFT);
   menu.update();
   delay(3000);
@@ -152,17 +173,30 @@ void setup() {
 
  //analogWrite(HEATER, 100);
 
-  // Start PID (TESTING PURPOSES)
+  // Start PID
   pid.SetMode(AUTOMATIC);
- 
+
+  // PID Autotuning
+  pidAuto.SetControlType(1);
+
+  // Stepper motor setup
+  m_extruder.setMaxSpeed(1000);
+  m_extruder.setSpeed(200);
+
+  m_winder.setMaxSpeed(1000);
+  m_winder.setSpeed(50);
 }
 
 void loop() {
 
+  // Motor test
+  //m_extruder.runSpeed();
+  //m_winder.runSpeed();
+  
   if (millis() >= currentTime + 1000){
-    Serial.println(thermocouple->readCelsius());
     currentTime = millis();
     }
+    
   // Motor tests
   //m_extruder.runSpeed();
   //m_winder.runSpeed();
@@ -174,11 +208,30 @@ void loop() {
   // Reading encoder turns
   newPosition = enc.read()/4;
   if ((newPosition != encOldPosition) && (menu.get_currentScreen() != &statusScreen)) {
+
+    // Encoder test output
+    Serial.print("Old Pos: ");
+    Serial.println(encOldPosition);
+    Serial.print("New Pos: ");
+    Serial.println(newPosition);
+    Serial.println("------------");
+
+    
     if(menu.get_currentScreen() == &optionsScreen && newPosition > encOldPosition){
      menu.switch_focus(false); // Focus backwards (up the screen) when encoder is turned counter-clockwise
     }
+    
     if(menu.get_currentScreen() == &optionsScreen && newPosition < encOldPosition){
       menu.switch_focus(true); // Focus forwards (down the screen) when encoder is turned clockwise
+    }
+    
+    if(menu.get_currentScreen() == &tempScreen){
+      if (newPosition > encOldPosition){
+        setTemp += (encOldPosition - newPosition); // Subtract when encoder is turned counter-clockwise
+      }else{
+        setTemp += (encOldPosition - newPosition); // Add when encoder is turned clockwise
+      }
+      
     }
     encOldPosition = newPosition;
     menu.update();
@@ -199,14 +252,32 @@ void loop() {
       menu.change_screen(&statusScreen);
       menu.update();
     }
+
+    // If current screen is the options screen, and the selected line is "Set temp"
+    else if(menu.get_currentScreen() == &optionsScreen && menu.get_focusedLine() == 1){
+      menu.change_screen(&tempScreen);
+      menu.update();
+    }
+
+    else if(menu.get_currentScreen() == &tempScreen){
+      menu.change_screen(&optionsScreen);
+      menu.update();  
+    }
    }
 
   // Reading thermocouple, storing value in short temperature if value needs to be updated, and updating menu if needed
   if (millis() >= pidTimekeeper + 500){
     newTemp = thermocouple->readCelsius();
+    
+    // Graphing temperature output vs.time
+    /*
+    Serial.println(newTemp);
+    Serial.print(",");
+    Serial.println(setTemp);
+    */
     if(temperature != newTemp){
        temperature = newTemp;
-        if (menu.get_currentScreen() == &statusScreen){
+        if (menu.get_currentScreen() == &statusScreen || menu.get_currentScreen() == &tempScreen){
           menu.update();
       }
     }
@@ -214,11 +285,31 @@ void loop() {
   }
   
 
-   // Adjusting PID
+   // Heater PID
    pid.Compute();
    analogWrite(HEATER, output);
 
+   /*
+   // Running PID autotuner for heater and checking if it's done
+   if(!stopPidAuto){
+    int PIDdone = pidAuto.Runtime();
+    if(PIDdone == 1){
+      returnPIDConstants();
+      stopPidAuto = true;
+     }
+   }
+   */ 
   
    
   
 }
+
+void returnPIDConstants(){
+  Serial.print("PID Kp = ");
+  Serial.println(pidAuto.GetKp());
+  Serial.print("PID Ki = ");
+  Serial.println(pidAuto.GetKi());
+  Serial.print("PID Kd = ");
+  Serial.println(pidAuto.GetKd());
+  return;
+  }
