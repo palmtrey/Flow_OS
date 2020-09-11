@@ -40,6 +40,7 @@
 #define ENC_CLOCK 14
 #define ENC_DATA 15
 #define ENC_SWITCH 16
+#define WIND_LIM_SWITCH 17 // HIGH means switch is not pressed
 
 //Motor Constants
 #define M_EXTRUDER_STEP 46
@@ -56,9 +57,9 @@
 // Functions
 
 void returnPIDConstants();
-
-//==================================
-//Objects
+ 
+ void homeLevelWinder(); // Call to home the level winder
+ 
 // Stepper objects
 AccelStepper m_extruder(1, M_EXTRUDER_STEP, M_EXTRUDER_DIR);
 AccelStepper m_roller(1, M_ROLLER_STEP, M_ROLLER_DIR);
@@ -76,7 +77,6 @@ Encoder enc(ENC_CLOCK, ENC_DATA);
 long encOldPosition = -999;
 long newPosition = 0;
 unsigned long currentTime = 0;
-//==================================
 
 // Status display variables
 short extruderMotorStatus = 0;
@@ -97,12 +97,16 @@ PID pid(&temperature, &output, &setTemp, Kp, Ki, Kd, DIRECT);
 PID_ATune pidAuto(&temperature, &output);
 bool stopPidAuto = false; // Set to true when the autotuner finishes
 
+// Motor variables
+bool levelHomed = false; // Set to true when level winder has been homed
 
 // Used for attaching to LiquidLines to make them focusable, and thus scrollable
 void blankFunction() {
   return;
   
  }
+
+
 
 // Menu creation
 LiquidMenu menu(lcd);
@@ -167,7 +171,8 @@ void setup() {
   menu.add_screen(tempScreen);
   menu.set_focusPosition(Position::LEFT);
   menu.update();
-  delay(3000);
+ //delay(3000);
+  homeLevelWinder();
   menu.next_screen();
   
 
@@ -185,9 +190,22 @@ void setup() {
 
   m_winder.setMaxSpeed(1000);
   m_winder.setSpeed(50);
+
+  
+
+  
 }
 
 void loop() {
+
+  
+
+  m_level.run();
+  // Limit switch test
+  if(millis() >= currentTime + 500){
+    Serial.println(digitalRead(WIND_LIM_SWITCH));
+    currentTime = millis();  
+  }
 
   // Motor test
   //m_extruder.runSpeed();
@@ -245,7 +263,6 @@ void loop() {
    if(menu.get_currentScreen() == &statusScreen){
       menu.change_screen(&optionsScreen);
       menu.update();
-      //delay(500);
     } 
     // If current screen is the options screen, and the selected line is "Back"
     else if(menu.get_currentScreen() == &optionsScreen && menu.get_focusedLine() == 0){
@@ -312,4 +329,27 @@ void returnPIDConstants(){
   Serial.print("PID Kd = ");
   Serial.println(pidAuto.GetKd());
   return;
+}
+
+// Homes the level winder
+void homeLevelWinder(){
+  
+  // Get level winder ready to be homed
+  m_level.setCurrentPosition(0); 
+  m_level.moveTo(5000); // Get the level winder ready to move fast towards the limit switch
+  m_level.setMaxSpeed(1000);
+  m_level.setSpeed(500);
+  m_level.setAcceleration(1000);
+  
+  while(!levelHomed){
+    m_level.run(); // Move the level winder towards the limit switch
+
+    if(digitalRead(WIND_LIM_SWITCH) == LOW){
+      levelHomed = true; // Let us know that the level has been homed
+      m_level.setCurrentPosition(0); // Set our starting pos to 0
+      m_level.moveTo(-1500); // Move the level winder out from the limit switch
+      
+    }
+    
   }
+}
